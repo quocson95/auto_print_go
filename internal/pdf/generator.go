@@ -1,0 +1,341 @@
+package pdf
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
+
+	"github.com/sondq/auto_print/internal/config"
+)
+
+var shutdownRequested atomic.Bool
+
+func RequestShutdown()          { shutdownRequested.Store(true) }
+func ResetShutdown()            { shutdownRequested.Store(false) }
+func IsShutdownRequested() bool { return shutdownRequested.Load() }
+
+type Generator struct {
+	outputDir     string
+	retentionDays int
+}
+
+func NewGenerator(cfg *config.Config) *Generator {
+	return &Generator{
+		outputDir:     cfg.PDFOutputDir,
+		retentionDays: cfg.PDFRetentionDays,
+	}
+}
+
+func (g *Generator) generateFilename(subject string) string {
+	subject = strings.TrimPrefix(subject, "Fwd ")
+	subject = strings.TrimPrefix(subject, "Fwd: ")
+
+	re := regexp.MustCompile(`[^a-zA-Z0-9 \-_]`)
+	clean := re.ReplaceAllString(subject, "")
+	clean = strings.TrimSpace(clean)
+	if len(clean) > 50 {
+		clean = clean[:50]
+	}
+	return clean + ".pdf"
+}
+
+func (g *Generator) CleanupOldPDFs() {
+	if g.retentionDays <= 0 {
+		return
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -g.retentionDays)
+
+	entries, err := os.ReadDir(g.outputDir)
+	if err != nil {
+		slog.Error("Error cleaning up old PDFs", "error", err)
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".pdf") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			path := filepath.Join(g.outputDir, entry.Name())
+			slog.Info("Deleting old PDF", "file", entry.Name())
+			if err := os.Remove(path); err != nil {
+				slog.Error("Failed to delete PDF", "file", path, "error", err)
+			}
+		}
+	}
+}
+
+func (g *Generator) GenerateBothPDFs(ctx context.Context, url, subject string) (desktopPath, mobilePath string, err error) {
+	return retryWithBackoff(ctx, 10, 2*time.Second, func() (string, string, error) {
+		return g.generateBothPDFsOnce(ctx, url, subject)
+	})
+}
+
+func retryWithBackoff(ctx context.Context, maxRetries int, initialDelay time.Duration, fn func() (string, string, error)) (string, string, error) {
+	delay := initialDelay
+	var lastErr error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if IsShutdownRequested() {
+			return "", "", fmt.Errorf("shutdown requested")
+		}
+
+		d, m, err := fn()
+		if err == nil {
+			return d, m, nil
+		}
+
+		lastErr = err
+		if attempt < maxRetries {
+			slog.Warn("PDF generation failed, retrying",
+				"attempt", attempt+1,
+				"maxRetries", maxRetries+1,
+				"error", err,
+				"retryIn", delay,
+			)
+			select {
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			case <-time.After(delay):
+			}
+			delay = min(delay*2, 60*time.Second)
+		}
+	}
+
+	return "", "", fmt.Errorf("all retries failed: %w", lastErr)
+}
+
+func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject string) (string, string, error) {
+	baseName := strings.TrimSuffix(g.generateFilename(subject), ".pdf")
+	desktopFile := fmt.Sprintf("[PC] %s.pdf", baseName)
+	mobileFile := fmt.Sprintf("[Mobile] %s.pdf", baseName)
+	desktopPath := filepath.Join(g.outputDir, desktopFile)
+	mobilePath := filepath.Join(g.outputDir, mobileFile)
+
+	slog.Info("Generating both PDFs", "url", url)
+
+	path, _ := launcher.LookPath()
+	u := launcher.New().Bin(path).Headless(true).MustLaunch()
+	browser := rod.New().ControlURL(u).MustConnect()
+	defer browser.MustClose()
+
+	page := browser.MustPage("")
+
+	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
+		Width: 1920, Height: 1080,
+	}); err != nil {
+		return "", "", fmt.Errorf("set viewport: %w", err)
+	}
+
+	slog.Info("Loading page", "url", url)
+	if err := page.Navigate(url); err != nil {
+		return "", "", fmt.Errorf("navigate: %w", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		return "", "", fmt.Errorf("wait load: %w", err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	wait := page.Context(waitCtx).WaitRequestIdle(2*time.Second, nil, nil, nil)
+	wait()
+
+	g.closePopups(page)
+
+	slog.Info("Scrolling page to load all images...")
+	g.scrollToBottom(page)
+
+	slog.Info("Waiting for images to load...")
+	time.Sleep(3 * time.Second)
+
+	slog.Info("Compressing images to reduce PDF size...")
+	g.compressImages(page)
+	time.Sleep(time.Second)
+
+	// Desktop PDF (A4 landscape)
+	slog.Info("Saving desktop PDF", "path", desktopPath)
+	if err := g.savePDF(page, desktopPath, 29.7, 21.0, 1.0); err != nil {
+		return "", "", fmt.Errorf("desktop PDF: %w", err)
+	}
+	slog.Info("Desktop PDF generated", "path", desktopPath)
+
+	// Switch to mobile viewport
+	slog.Info("Resizing viewport to mobile...")
+	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
+		Width: 375, Height: 812,
+	}); err != nil {
+		return "", "", fmt.Errorf("set mobile viewport: %w", err)
+	}
+	time.Sleep(time.Second)
+
+	slog.Info("Injecting mobile-friendly CSS...")
+	g.injectMobileCSS(page)
+	time.Sleep(500 * time.Millisecond)
+
+	// Mobile PDF (A5 portrait)
+	slog.Info("Saving mobile PDF", "path", mobilePath)
+	if err := g.savePDF(page, mobilePath, 14.8, 21.0, 0.5); err != nil {
+		return "", "", fmt.Errorf("mobile PDF: %w", err)
+	}
+	slog.Info("Mobile PDF generated", "path", mobilePath)
+
+	g.CleanupOldPDFs()
+
+	return desktopPath, mobilePath, nil
+}
+
+func (g *Generator) savePDF(page *rod.Page, path string, widthCM, heightCM, marginCM float64) error {
+	marginInch := marginCM / 2.54
+
+	reader, err := page.PDF(&proto.PagePrintToPDF{
+		PrintBackground: true,
+		PaperWidth:      toPtr(widthCM / 2.54),
+		PaperHeight:     toPtr(heightCM / 2.54),
+		MarginTop:       toPtr(marginInch),
+		MarginBottom:    toPtr(marginInch),
+		MarginLeft:      toPtr(marginInch),
+		MarginRight:     toPtr(marginInch),
+	})
+	if err != nil {
+		return fmt.Errorf("generate PDF: %w", err)
+	}
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("read PDF: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write PDF: %w", err)
+	}
+
+	return nil
+}
+
+func toPtr[T any](v T) *T { return &v }
+
+func (g *Generator) closePopups(page *rod.Page) {
+	slog.Info("Closing popups and overlays...")
+
+	selectors := []string{
+		`button[aria-label*="Close"]`,
+		`button[aria-label*="close"]`,
+		`[class*="close"]`,
+		`[class*="dismiss"]`,
+	}
+
+	closed := 0
+	for _, sel := range selectors {
+		el, err := page.Timeout(500 * time.Millisecond).Element(sel)
+		if err == nil && el != nil {
+			if err := el.Click(proto.InputMouseButtonLeft, 1); err == nil {
+				closed++
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+	}
+
+	page.MustEval(`() => {
+		document.querySelectorAll('[class*="overlay"], [class*="backdrop"], [class*="modal-backdrop"]')
+			.forEach(el => { if (el.offsetParent !== null) el.style.display = 'none'; });
+		document.querySelectorAll('*').forEach(el => {
+			if (parseInt(window.getComputedStyle(el).zIndex) > 9999) el.style.display = 'none';
+		});
+		document.body.style.overflow = 'auto';
+		document.documentElement.style.overflow = 'auto';
+	}`)
+
+	if closed > 0 {
+		slog.Info("Closed popups", "count", closed)
+	}
+}
+
+func (g *Generator) scrollToBottom(page *rod.Page) {
+	viewportHeight := page.MustEval(`() => window.innerHeight`).Int()
+	scrollHeight := page.MustEval(`() => document.body.scrollHeight`).Int()
+
+	current := 0
+	for current < scrollHeight {
+		if IsShutdownRequested() {
+			slog.Info("Shutdown requested, stopping scroll")
+			return
+		}
+		current += viewportHeight
+		page.MustEval(fmt.Sprintf(`() => window.scrollTo(0, %d)`, current))
+		time.Sleep(300 * time.Millisecond)
+
+		newHeight := page.MustEval(`() => document.body.scrollHeight`).Int()
+		if newHeight > scrollHeight {
+			scrollHeight = newHeight
+		}
+	}
+
+	page.MustEval(`() => window.scrollTo(0, document.body.scrollHeight)`)
+	time.Sleep(500 * time.Millisecond)
+	page.MustEval(`() => window.scrollTo(0, 0)`)
+	time.Sleep(300 * time.Millisecond)
+
+	slog.Info("Incremental scrolling complete")
+}
+
+func (g *Generator) compressImages(page *rod.Page) {
+	page.MustEval(`() => {
+		const images = document.querySelectorAll('img');
+		images.forEach(img => {
+			if (img.naturalWidth < 100 || img.naturalHeight < 100) return;
+			try {
+				const canvas = document.createElement('canvas');
+				const ctx = canvas.getContext('2d');
+				const maxSize = 800;
+				let width = img.naturalWidth;
+				let height = img.naturalHeight;
+				if (width > maxSize || height > maxSize) {
+					if (width > height) {
+						height = Math.round(height * maxSize / width);
+						width = maxSize;
+					} else {
+						width = Math.round(width * maxSize / height);
+						height = maxSize;
+					}
+				}
+				canvas.width = width;
+				canvas.height = height;
+				ctx.drawImage(img, 0, 0, width, height);
+				img.src = canvas.toDataURL('image/jpeg', 0.6);
+			} catch (e) {}
+		});
+	}`)
+}
+
+func (g *Generator) injectMobileCSS(page *rod.Page) {
+	page.MustEval(`() => {
+		const style = document.createElement('style');
+		style.textContent = ` + "`" + `
+			img { max-width: 100% !important; height: auto !important; width: auto !important; }
+			* { max-width: 100% !important; word-wrap: break-word !important; overflow-wrap: break-word !important; }
+			body, html { overflow-x: hidden !important; width: 100% !important; }
+			table { table-layout: fixed !important; width: 100% !important; }
+			pre, code { white-space: pre-wrap !important; word-break: break-word !important; max-width: 100% !important; }
+			iframe { max-width: 100% !important; }
+			body { font-size: 14px !important; line-height: 1.5 !important; }
+			[style*="position: fixed"], [style*="position:fixed"] { position: relative !important; }
+		` + "`" + `;
+		document.head.appendChild(style);
+	}`)
+}

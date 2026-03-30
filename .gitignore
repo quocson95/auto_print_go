@@ -1,0 +1,22 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+auto_print
+
+# Test
+*.test
+*.out
+
+# Dependency
+vendor/
+
+# Environment
+.env
+.env.*
+
+# Output
+output/
+logs/

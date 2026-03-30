@@ -1,0 +1,42 @@
+services:
+  email-to-pdf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: email-to-pdf-automation-go
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f auto_print || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    security_opt:
+      - no-new-privileges:true
+
+    read_only: false
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
