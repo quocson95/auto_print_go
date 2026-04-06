@@ -448,15 +448,31 @@ func (m *Monitor) CheckNewEmails() ([]EmailResult, error) {
 		seqSet := new(imap.SeqSet)
 		seqSet.AddNum(uids...)
 
-		section := &imap.BodySectionName{}
+		section := &imap.BodySectionName{Peek: true}
 		items := []imap.FetchItem{section.FetchItem(), imap.FetchEnvelope, imap.FetchUid}
 
 		messages := make(chan *imap.Message, len(uids))
-		if err := m.imapClient.UidFetch(seqSet, items, messages); err != nil {
-			slog.Error("Fetch failed", "error", err)
+		slog.Info("Fetching email bodies...", "count", len(uids))
+
+		fetchDone := make(chan error, 1)
+		go func() {
+			err := m.imapClient.UidFetch(seqSet, items, messages)
+			close(messages)
+			fetchDone <- err
+		}()
+
+		select {
+		case err := <-fetchDone:
+			if err != nil {
+				slog.Error("Fetch failed", "error", err)
+				continue
+			}
+		case <-time.After(60 * time.Second):
+			slog.Error("Fetch timed out, reconnecting...")
+			m.reconnect()
 			continue
 		}
-
+		slog.Info("Fetch complete, processing messages...")
 		for msg := range messages {
 			uid := msg.Uid
 

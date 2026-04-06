@@ -316,7 +316,9 @@ func (m *Monitor) CheckNewEmails() ([]EmailResult, error) {
 
 		fetchDone := make(chan error, 1)
 		go func() {
-			fetchDone <- m.imapClient.UidFetch(seqSet, items, messages)
+			err := m.imapClient.UidFetch(seqSet, items, messages)
+			close(messages)
+			fetchDone <- err
 		}()
 
 		select {
