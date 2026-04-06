@@ -8,6 +8,7 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -19,6 +20,7 @@ import (
 
 type Monitor struct {
 	cfg *config.Config
+	mu  sync.Mutex
 
 	imapClient        *client.Client
 	lastNoopTime      time.Time
@@ -44,24 +46,30 @@ func NewMonitor(cfg *config.Config) *Monitor {
 }
 
 func (m *Monitor) ensureConnection() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ensureConnectionUnlocked()
+}
+
+func (m *Monitor) ensureConnectionUnlocked() error {
 	now := time.Now()
 
 	if m.imapClient != nil {
 		if now.Sub(m.connectionCreated) > m.maxConnectionAge {
 			slog.Info("Connection age exceeds max, reconnecting...")
-			m.reconnect()
+			m.reconnectUnlocked()
 			return nil
 		}
 	}
 
 	if m.imapClient == nil {
-		return m.connect()
+		return m.connectUnlocked()
 	}
 
 	if now.Sub(m.lastNoopTime) > m.noopInterval {
 		if err := m.imapClient.Noop(); err != nil {
 			slog.Warn("NOOP failed, reconnecting...", "error", err)
-			m.reconnect()
+			m.reconnectUnlocked()
 		}
 		m.lastNoopTime = now
 	}
@@ -69,7 +77,7 @@ func (m *Monitor) ensureConnection() error {
 	return nil
 }
 
-func (m *Monitor) connect() error {
+func (m *Monitor) connectUnlocked() error {
 	addr := fmt.Sprintf("%s:%d", m.cfg.IMAPServer, m.cfg.IMAPPort)
 	slog.Info("Connecting to IMAP server", "addr", addr)
 
@@ -78,11 +86,15 @@ func (m *Monitor) connect() error {
 		return fmt.Errorf("dial TLS: %w", err)
 	}
 
+	c.Timeout = 60 * time.Second
+
 	if err := c.Login(m.cfg.EmailAddress, m.cfg.EmailPassword); err != nil {
+		c.Logout()
 		return fmt.Errorf("login: %w", err)
 	}
 
 	if _, err := c.Select("INBOX", false); err != nil {
+		c.Logout()
 		return fmt.Errorf("select INBOX: %w", err)
 	}
 
@@ -93,14 +105,20 @@ func (m *Monitor) connect() error {
 	return nil
 }
 
-func (m *Monitor) reconnect() {
-	m.Disconnect()
-	if err := m.connect(); err != nil {
+func (m *Monitor) reconnectUnlocked() {
+	m.disconnectUnlocked()
+	if err := m.connectUnlocked(); err != nil {
 		slog.Error("Reconnect failed", "error", err)
 	}
 }
 
 func (m *Monitor) Disconnect() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.disconnectUnlocked()
+}
+
+func (m *Monitor) disconnectUnlocked() {
 	if m.imapClient != nil {
 		if err := m.imapClient.Logout(); err != nil {
 			slog.Debug("Logout error", "error", err)
@@ -111,7 +129,10 @@ func (m *Monitor) Disconnect() {
 }
 
 func (m *Monitor) MarkAsRead(uid uint32) {
-	if err := m.ensureConnection(); err != nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.ensureConnectionUnlocked(); err != nil {
 		slog.Error("Failed to ensure connection for mark read", "error", err)
 		return
 	}
@@ -122,14 +143,17 @@ func (m *Monitor) MarkAsRead(uid uint32) {
 
 	if err := m.imapClient.UidStore(seqSet, imap.FormatFlagsOp(imap.AddFlags, false), flags, nil); err != nil {
 		slog.Error("Failed to mark email as read", "uid", uid, "error", err)
-		m.reconnect()
+		m.reconnectUnlocked()
 		return
 	}
 	slog.Info("Marked email as read", "uid", uid)
 }
 
 func (m *Monitor) MarkAsNotRead(uid uint32) {
-	if err := m.ensureConnection(); err != nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.ensureConnectionUnlocked(); err != nil {
 		slog.Error("Failed to ensure connection for mark unread", "error", err)
 		return
 	}
@@ -140,7 +164,7 @@ func (m *Monitor) MarkAsNotRead(uid uint32) {
 
 	if err := m.imapClient.UidStore(seqSet, imap.FormatFlagsOp(imap.RemoveFlags, false), flags, nil); err != nil {
 		slog.Error("Failed to mark email as not read", "uid", uid, "error", err)
-		m.reconnect()
+		m.reconnectUnlocked()
 		return
 	}
 	slog.Info("Marked email as not read", "uid", uid)
@@ -277,7 +301,10 @@ func parseMultipart(r io.Reader, boundary string) string {
 }
 
 func (m *Monitor) CheckNewEmails() ([]EmailResult, error) {
-	if err := m.ensureConnection(); err != nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.ensureConnectionUnlocked(); err != nil {
 		return nil, fmt.Errorf("ensure connection: %w", err)
 	}
 
@@ -291,7 +318,7 @@ func (m *Monitor) CheckNewEmails() ([]EmailResult, error) {
 		uids, err := m.imapClient.UidSearch(criteria)
 		if err != nil {
 			slog.Error("Search failed", "sender", sender, "error", err)
-			m.reconnect()
+			m.reconnectUnlocked()
 			return results, fmt.Errorf("search: %w", err)
 		}
 
@@ -314,24 +341,13 @@ func (m *Monitor) CheckNewEmails() ([]EmailResult, error) {
 		messages := make(chan *imap.Message, len(uids))
 		slog.Info("Fetching email bodies...", "count", len(uids))
 
-		fetchDone := make(chan error, 1)
-		go func() {
-			err := m.imapClient.UidFetch(seqSet, items, messages)
-			close(messages)
-			fetchDone <- err
-		}()
-
-		select {
-		case err := <-fetchDone:
-			if err != nil {
-				slog.Error("Fetch failed", "error", err)
-				continue
-			}
-		case <-time.After(60 * time.Second):
-			slog.Error("Fetch timed out, reconnecting...")
-			m.reconnect()
+		if err := m.imapClient.UidFetch(seqSet, items, messages); err != nil {
+			slog.Error("Fetch failed", "error", err)
+			m.reconnectUnlocked()
 			continue
 		}
+		close(messages)
+
 		slog.Info("Fetch complete, processing messages...")
 
 		for msg := range messages {
