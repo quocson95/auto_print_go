@@ -130,11 +130,25 @@ func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject strin
 
 	slog.Info("Generating both PDFs", "url", url)
 
-	path, _ := launcher.LookPath()
-	u := launcher.New().Bin(path).Headless(true).MustLaunch()
+	slog.Info("Launching Chromium browser process...")
+	l := launcher.New().
+		Headless(true).
+		Set("no-sandbox").
+		Set("disable-dev-shm-usage").
+		Set("disable-gpu").
+		Set("disable-software-rasterizer").
+		Set("disable-setuid-sandbox")
+
+	u, err := l.Launch()
+	if err != nil {
+		return "", "", fmt.Errorf("launch chromium: %w", err)
+	}
+
+	slog.Info("Chromium launched, connecting to DevTools protocol...")
 	browser := rod.New().ControlURL(u).MustConnect()
 	defer browser.MustClose()
 
+	slog.Info("Opening new browser page...")
 	page := browser.MustPage("")
 
 	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
