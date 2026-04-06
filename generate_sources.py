@@ -226,7 +226,7 @@ func (m *Monitor) connectUnlocked() error {
 		return fmt.Errorf("dial TLS: %w", err)
 	}
 
-	c.Timeout = 60 * time.Second
+	c.Timeout = 5 * time.Minute
 
 	if err := c.Login(m.cfg.EmailAddress, m.cfg.EmailPassword); err != nil {
 		c.Logout()
