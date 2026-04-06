@@ -481,61 +481,67 @@ func (m *Monitor) CheckNewEmails() ([]EmailResult, error) {
 		messages := make(chan *imap.Message, len(uids))
 		slog.Info("Fetching email bodies...", "count", len(uids))
 
+		// Start reader goroutine to process messages concurrently with UidFetch
+		// go-imap closes the 'messages' channel automatically when UidFetch returns
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for msg := range messages {
+				uid := msg.Uid
+
+				if _, seen := m.processedUIDs[uid]; seen {
+					continue
+				}
+
+				subject := ""
+				if msg.Envelope != nil {
+					subject = msg.Envelope.Subject
+				}
+
+				subject = strings.TrimPrefix(subject, "Fwd: ")
+				subject = strings.TrimPrefix(subject, "Fwd ")
+
+				slog.Info("Processing email", "uid", uid, "subject", subject)
+
+				var body string
+				for _, value := range msg.Body {
+					b, err := io.ReadAll(value)
+					if err != nil {
+						slog.Error("Failed to read message body", "uid", uid, "error", err)
+						continue
+					}
+					body = string(b)
+				}
+
+				parsed, err := mail.ReadMessage(strings.NewReader(body))
+				if err == nil {
+					body = getEmailBody(parsed)
+				}
+
+				link := m.extractLink(body)
+				if link != "" {
+					results = append(results, EmailResult{
+						UID:     uid,
+						Subject: subject,
+						Link:    link,
+					})
+					m.processedUIDs[uid] = struct{}{}
+					slog.Info("Email queued for processing", "uid", uid)
+				} else {
+					slog.Warn("No valid link found in email", "uid", uid)
+					m.processedUIDs[uid] = struct{}{}
+				}
+			}
+		}()
+
 		if err := m.imapClient.UidFetch(seqSet, items, messages); err != nil {
 			slog.Error("Fetch failed", "error", err)
 			m.reconnectUnlocked()
-			continue
 		}
-		close(messages)
 
-		slog.Info("Fetch complete, processing messages...")
-
-		for msg := range messages {
-			uid := msg.Uid
-
-			if _, seen := m.processedUIDs[uid]; seen {
-				continue
-			}
-
-			subject := ""
-			if msg.Envelope != nil {
-				subject = msg.Envelope.Subject
-			}
-
-			subject = strings.TrimPrefix(subject, "Fwd: ")
-			subject = strings.TrimPrefix(subject, "Fwd ")
-
-			slog.Info("Processing email", "uid", uid, "subject", subject)
-
-			var body string
-			for _, value := range msg.Body {
-				b, err := io.ReadAll(value)
-				if err != nil {
-					slog.Error("Failed to read message body", "uid", uid, "error", err)
-					continue
-				}
-				body = string(b)
-			}
-
-			parsed, err := mail.ReadMessage(strings.NewReader(body))
-			if err == nil {
-				body = getEmailBody(parsed)
-			}
-
-			link := m.extractLink(body)
-			if link != "" {
-				results = append(results, EmailResult{
-					UID:     uid,
-					Subject: subject,
-					Link:    link,
-				})
-				m.processedUIDs[uid] = struct{}{}
-				slog.Info("Email queued for processing", "uid", uid)
-			} else {
-				slog.Warn("No valid link found in email", "uid", uid)
-				m.processedUIDs[uid] = struct{}{}
-			}
-		}
+		// Wait for reader goroutine to complete (it finishes when UidFetch closes messages)
+		<-done
+		slog.Info("Fetch and processing complete for sender", "sender", sender)
 	}
 
 	if len(results) == 0 {
