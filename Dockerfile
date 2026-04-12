@@ -65,6 +65,7 @@ RUN ldconfig
 
 # Copy binary from builder
 COPY --from=builder /app/auto_print /app/auto_print
+COPY --from=builder /app/library.html /app/library.html
 
 # Create output and logs directories
 RUN mkdir -p output logs && chown -R appuser:appuser /app

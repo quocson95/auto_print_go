@@ -76,6 +76,8 @@ func main() {
 		pdf.RequestShutdown()
 	}()
 
+	go syncLibraryHTMLOnStartup(ctx, s3Uploader)
+
 	cycleCount := 0
 	for {
 		select {
@@ -107,6 +109,56 @@ shutdown:
 	emailMonitor.Disconnect()
 	slog.Info("Application shutting down gracefully")
 	slog.Info(strings.Repeat("=", 60))
+}
+
+func syncLibraryHTMLOnStartup(ctx context.Context, uploader *s3pkg.Uploader) {
+	if uploader == nil || !uploader.IsConfigured() {
+		slog.Info("Skipping library.html sync because S3 is not configured")
+		return
+	}
+
+	libraryPath := resolveLibraryHTMLPath()
+	if libraryPath == "" {
+		slog.Warn("Skipping library.html sync because file was not found")
+		return
+	}
+
+	syncCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	url, err := uploader.UploadStaticFile(
+		syncCtx,
+		libraryPath,
+		"pdfs/library.html",
+		"text/html; charset=utf-8",
+		"max-age=0, no-cache, no-store, must-revalidate",
+	)
+	if err != nil {
+		slog.Warn("Failed to sync library.html to S3", "path", libraryPath, "error", err)
+		return
+	}
+
+	slog.Info("library.html synced to S3", "path", libraryPath, "url", url)
+}
+
+func resolveLibraryHTMLPath() string {
+	const name = "library.html"
+
+	if info, err := os.Stat(name); err == nil && !info.IsDir() {
+		return name
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+
+	candidate := filepath.Join(filepath.Dir(execPath), name)
+	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		return candidate
+	}
+
+	return ""
 }
 
 func processEmails(

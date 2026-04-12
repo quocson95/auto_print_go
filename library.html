@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Oneblock Library</title>
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 67.2 67.2'%3E%3Cpolygon points='0 0 0 67.2 29.89 67.2 29.89 15.92 17.09 11.01 42.9 11.01 42.9 11.02 42.9 20.9 42.9 67.2 67.2 67.2 67.2 0 0 0' fill='%236366f1'/%3E%3C/svg%3E" />
+  <!-- Preload critical data -->
+  <link rel="preload" href="https://s3.cloudfly.vn/substack/pdfs/index.json" as="fetch" crossorigin />
+
+  <!-- Preconnect to Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+  <!-- Async Font Loading -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"
+    media="print" onload="this.media='all'" />
+
+  <!-- NoScript Fallback -->
+  <noscript>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet" />
+  </noscript>
+  <style>
+    :root {
+      --primary: #6366f1;
+      --primary-dark: #4f46e5;
+      --secondary: #ec4899;
+      --bg-dark: #0f172a;
+      --bg-card: #1e293b;
+      --bg-card-hover: #334155;
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --border: #334155;
+      --success: #22c55e;
+      --gradient: linear-gradient(135deg, #6366f1 0%, #ec4899 100%);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: "Inter", sans-serif;
+      background: var(--bg-dark);
+      min-height: 100vh;
+      color: var(--text-primary);
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+    }
+
+    /* Header */
+    .header {
+      text-align: center;
+      margin-bottom: 3rem;
+    }
+
+    .header h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+    }
+
+    .header h1 span {
+      background: var(--gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .header p {
+      color: var(--text-secondary);
+      font-size: 1.1rem;
+    }
+
+    /* Search */
+    .search-container {
+      max-width: 600px;
+      margin: 0 auto 2rem;
+      position: relative;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 1rem 1rem 1rem 3rem;
+      font-size: 1rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text-primary);
+      transition: all 0.3s ease;
+    }
+
+    .search-input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 20px;
+      height: 20px;
+      fill: var(--text-secondary);
+      pointer-events: none;
+    }
+
+    /* Loading State */
+    .loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 4rem;
+    }
+
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 4px solid var(--border);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .loading p {
+      margin-top: 1rem;
+      color: var(--text-secondary);
+    }
+
+    /* Library Grid */
+    .library-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+
+    /* Card */
+    .card {
+      background: var(--bg-card);
+      border-radius: 16px;
+      padding: 1.5rem;
+      border: 1px solid var(--border);
+      transition: all 0.3s ease;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card:hover {
+      background: var(--bg-card-hover);
+      transform: translateY(-4px) scale(1.02);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+      z-index: 10;
+    }
+
+    .card-icon {
+      width: 100%;
+      height: 240px;
+      background: var(--bg-card);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.25rem;
+      overflow: hidden;
+      position: relative;
+      cursor: pointer;
+      border: 1px solid var(--border);
+    }
+
+    .card-icon svg {
+      width: 64px;
+      height: 64px;
+      fill: white;
+      z-index: 1;
+      opacity: 0.8;
+    }
+
+    .card-thumbnail {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top;
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 2;
+      z-index: 2;
+      transition: opacity 0.5s ease, transform 0.5s ease;
+      opacity: 0;
+    }
+
+    .card-thumbnail.loaded {
+      opacity: 1;
+    }
+
+    /* Shimmer Effect */
+    .card-icon::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg,
+          rgba(255, 255, 255, 0) 0%,
+          rgba(255, 255, 255, 0.1) 50%,
+          rgba(255, 255, 255, 0) 100%);
+      transform: skewX(-25deg) translateX(-150%);
+      animation: shimmer 1.5s infinite;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    @keyframes shimmer {
+      100% {
+        transform: skewX(-25deg) translateX(150%);
+      }
+    }
+
+    .loading-text {
+      z-index: 1;
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+
+    .card:hover .card-thumbnail {
+      transform: scale(1.2);
+    }
+
+    .card-thumbnail.error {
+      display: none;
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+      line-height: 1.4;
+    }
+
+    .card-meta {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+    }
+
+    .meta-item svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+
+    /* Download Buttons Row */
+    .download-row {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .download-btn {
+      flex: 1;
+      min-width: 140px;
+      padding: 0.875rem 1.25rem;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 0.875rem;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      transition: all 0.3s ease;
+      cursor: pointer;
+      border: none;
+    }
+
+    .download-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+    }
+
+    .btn-pc {
+      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      color: white;
+    }
+
+    .btn-pc:hover {
+      transform: scale(1.02);
+      box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+    }
+
+    .btn-mobile {
+      background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+      color: white;
+    }
+
+    .btn-mobile:hover {
+      transform: scale(1.02);
+      box-shadow: 0 8px 24px rgba(34, 197, 94, 0.4);
+    }
+
+    .btn-disabled {
+      background: var(--border);
+      color: var(--text-secondary);
+      cursor: not-allowed;
+    }
+
+    .btn-disabled:hover {
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* Badge */
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .badge-pc {
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+    }
+
+    .badge-mobile {
+      background: rgba(34, 197, 94, 0.2);
+      color: #4ade80;
+    }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-secondary);
+    }
+
+    .empty-state svg {
+      width: 64px;
+      height: 64px;
+      fill: var(--border);
+      margin-bottom: 1rem;
+    }
+
+    /* Stats Bar */
+    .stats-bar {
+      display: flex;
+      gap: 2rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 2rem;
+      padding: 1rem;
+      background: var(--bg-card);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    .stat-item {
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--primary);
+    }
+
+    .stat-label {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+    }
+
+    /* Responsive */
+    .mobile-only {
+      display: none;
+    }
+
+    @media (max-width: 640px) {
+      .header h1 {
+        font-size: 1.75rem;
+      }
+
+      .download-row {
+        flex-direction: column;
+      }
+
+      .download-btn {
+        min-width: 100%;
+      }
+
+      .stats-bar {
+        gap: 1rem;
+      }
+
+      .stat-value {
+        font-size: 1.25rem;
+      }
+
+      .desktop-only {
+        display: none !important;
+      }
+
+      .mobile-only {
+        display: flex !important;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>📚 <span></span>Oneblock Library</span></h1>
+      <p>Tải xuống tài liệu phiên bản PC và Mobile</p>
+
+      <div class="search-container">
+        <svg class="search-icon" viewBox="0 0 24 24">
+          <path
+            d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+        </svg>
+        <input type="text" id="search-input" class="search-input" placeholder="Tìm kiếm tài liệu..." />
+      </div>
+    </div>
+
+    <div id="stats" class="stats-bar" style="display: none">
+      <div class="stat-item">
+        <div class="stat-value" id="total-count">0</div>
+        <div class="stat-label">Tài liệu</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="total-size">0 MB</div>
+        <div class="stat-label">Tổng dung lượng</div>
+      </div>
+    </div>
+
+    <div id="content">
+      <div class="loading">
+        <div class="spinner"></div>
+        <p>Đang tải dữ liệu...</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const S3_BASE_URL = "https://s3.cloudfly.vn/substack";
+    let allGroups = [];
+
+    // Format file size
+    function formatSize(bytes) {
+      if (bytes === 0) return "0 B";
+      const k = 1024;
+      const sizes = ["B", "KB", "MB", "GB"];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+    }
+
+    // Format date
+    function formatDate(dateString) {
+      const date = new Date(dateString);
+      return date.toLocaleDateString("vi-VN", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      });
+    }
+
+    function normalizeTitle(title) {
+      return (title || "").replace(/\s+/g, " ").trim();
+    }
+
+    // Extract title from filename
+    function extractTitle(filename) {
+      // Remove [PC] or [Mobile] tags (case insensitive) and .pdf extension
+      return normalizeTitle(filename
+        .replace(/\[PC\]/gi, "")
+        .replace(/\[Mobile\]/gi, "")
+        .replace(/\.pdf$/i, "")
+        .replace(/(\d+)-(\d+)/g, "$1$2") // Normalize dates: 01-06 -> 0106
+      );
+    }
+
+    function getDisplayTitle(file) {
+      return normalizeTitle(file.title || file.name) || extractTitle(file.key.split("/").pop());
+    }
+
+    function getThumbnailSlug(file) {
+      const filename = file.key.split("/").pop();
+      return filename
+        .replace(/\[PC\]/gi, "")
+        .replace(/\[Mobile\]/gi, "")
+        .replace(/\.pdf$/i, "")
+        .replace(/(\d+)-(\d+)/g, "$1$2")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+    }
+
+    // Parse XML response
+    // Parse XML response - NO LONGER USED
+    // function parseS3XML(xmlString) { ... }
+
+    // Fetch and display data
+    async function loadLibrary() {
+      try {
+        // Fetch index.json instead of XML
+        const response = await fetch(`${S3_BASE_URL}/pdfs/index.json`);
+        if (!response.ok) throw new Error("Network response was not ok");
+
+        let files;
+        const contentType = response.headers.get("content-type");
+
+        // Robust handling for gzip
+        // 1. If browser handled it (Content-Encoding: gzip header present), response.json() works.
+        // 2. If header missing but content is gzipped, we need to inspect.
+
+        try {
+          // Try standard clone first to be safe, though slightly less efficient
+          // clone() is needed because if json() fails, the body is used
+          const clone = response.clone();
+          try {
+            files = await clone.json();
+          } catch (e) {
+            // Standard parsing failed. Might be gzipped without header.
+            console.log(
+              "Standard JSON parse failed, trying manual decompression..."
+            );
+            const buffer = await response.arrayBuffer();
+            const view = new Uint8Array(buffer);
+
+            // Check gzip magic bytes (0x1f 0x8b)
+            if (view[0] === 0x1f && view[1] === 0x8b) {
+              const stream = new DecompressionStream("gzip");
+              const decomressedStream = new Response(buffer).body.pipeThrough(
+                stream
+              );
+              const decompressedResponse = new Response(decomressedStream);
+              files = await decompressedResponse.json();
+            } else {
+              // Valid content but broken JSON? Or maybe just text.
+              const text = new TextDecoder().decode(buffer);
+              files = JSON.parse(text);
+            }
+          }
+        } catch (err) {
+          // Fallback for very old browsers or if clone failed (shouldn't happen in modern)
+          // If we are here, we probably consumed the main response in the retry block
+          console.error("Error parsing index.json:", err);
+          throw err;
+        }
+
+        // Filter for PDFs only (just in case)
+        const pdfFiles = files.filter((f) =>
+          f.key.toLowerCase().endsWith(".pdf")
+        );
+
+        allGroups = groupFiles(pdfFiles).sort((a, b) => {
+          // Sort by last modified date descending (taking latest of PC or Mobile)
+          const getTime = (group) =>
+            Math.max(
+              group.pc ? new Date(group.pc.lastModified).getTime() : 0,
+              group.mobile ? new Date(group.mobile.lastModified).getTime() : 0
+            );
+          return getTime(b) - getTime(a);
+        });
+
+        renderLibrary(allGroups);
+
+        // Add search listener
+        document
+          .getElementById("search-input")
+          .addEventListener("input", (e) => {
+            filterLibrary(e.target.value);
+          });
+      } catch (error) {
+        console.error("Error loading library:", error);
+        document.getElementById("content").innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                        <h3>Lỗi tải dữ liệu</h3>
+                        <p>Không thể tải danh sách tài liệu. Vui lòng thử lại sau.</p>
+                    </div>
+                `;
+      }
+    }
+
+    // Group files by title (PC and Mobile versions together)
+    function groupFiles(files) {
+      const groups = {};
+
+      files.forEach((file) => {
+        const filename = file.key.split("/").pop();
+        const title = getDisplayTitle(file);
+        const isPc = filename.includes("[PC]");
+        const isMobile = filename.includes("[Mobile]");
+
+        if (!groups[title]) {
+          groups[title] = {
+            title,
+            thumbnailSlug: null,
+            pc: null,
+            mobile: null,
+          };
+        }
+
+        if (isPc) {
+          groups[title].pc = file;
+        } else if (isMobile) {
+          groups[title].mobile = file;
+        }
+
+        if (!groups[title].thumbnailSlug) {
+          groups[title].thumbnailSlug = getThumbnailSlug(file);
+        }
+      });
+
+      return Object.values(groups);
+    }
+
+    // Create download URL
+    function getDownloadUrl(key) {
+      return `${S3_BASE_URL}/${encodeURIComponent(key).replace(/%2F/g, "/")}`;
+    }
+
+    // Smart PDF Open
+    function openSmartPdf(pcKey, mobileKey) {
+      const isMobile =
+        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+          navigator.userAgent
+        );
+
+      let url = "";
+      if (isMobile) {
+        // Prefer mobile, fallback to PC
+        url = mobileKey
+          ? getDownloadUrl(mobileKey)
+          : pcKey
+            ? getDownloadUrl(pcKey)
+            : "";
+      } else {
+        // Prefer PC, fallback to mobile
+        url = pcKey
+          ? getDownloadUrl(pcKey)
+          : mobileKey
+            ? getDownloadUrl(mobileKey)
+            : "";
+      }
+
+      if (url) {
+        window.open(url, "_blank");
+      } else {
+        alert("Tài liệu chưa có sẵn phiên bản này");
+      }
+    }
+
+    const ITEMS_PER_PAGE = 20;
+    let currentItems = [];
+    let renderedCount = 0;
+    let observer = null;
+
+    // Render next batch of items
+    function renderNextBatch() {
+      const grid = document.querySelector(".library-grid");
+      if (!grid) return;
+
+      const nextItems = currentItems.slice(
+        renderedCount,
+        renderedCount + ITEMS_PER_PAGE
+      );
+      if (nextItems.length === 0) return;
+
+      const html = nextItems
+        .map((group, index) => {
+          const lastMod = Math.max(
+            group.pc ? new Date(group.pc.lastModified).getTime() : 0,
+            group.mobile ? new Date(group.mobile.lastModified).getTime() : 0
+          );
+          return `
+                <div class="card">
+                    <div class="card-icon" onclick="openSmartPdf('${group.pc ? group.pc.key : ""
+            }', '${group.mobile ? group.mobile.key : ""}')">
+                        <img 
+                            src="${S3_BASE_URL}/pdfs/thumbnails/${encodeURIComponent(group.thumbnailSlug || group.title.replace(/\s+/g, '-'))}.webp" 
+                            alt="${group.title}"
+                            class="card-thumbnail"
+                            loading="${renderedCount + index > 6 ? "lazy" : "eager"
+            }"
+                            fetchpriority="${renderedCount + index < 6 ? "high" : "auto"
+            }"
+                            onload="this.classList.add('loaded')"
+                            onerror="this.classList.add('error')"
+                        >
+                        <span class="loading-text">Đang tải hình ảnh...</span>
+                    </div>
+                    <h3 class="card-title">${group.title}</h3>
+                    <div class="card-meta">
+                        ${group.pc
+              ? `
+                            <span class="meta-item">
+                                <svg viewBox="0 0 24 24"><path d="M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7v2H8v2h8v-2h-2v-2h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H3V4h18v12z"/></svg>
+                                PC: ${formatSize(group.pc.size)}
+                            </span>
+                        `
+              : ""
+            }
+                        ${group.mobile
+              ? `
+                            <span class="meta-item">
+                                <svg viewBox="0 0 24 24"><path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
+                                Mobile: ${formatSize(group.mobile.size)}
+                            </span>
+                        `
+              : ""
+            }
+                        ${group.pc || group.mobile
+              ? `
+                            <span class="meta-item">
+                                <svg viewBox="0 0 24 24"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>
+                                ${formatDate(
+                (group.pc || group.mobile).lastModified
+              )}
+                            </span>
+                        `
+              : ""
+            }
+                    </div>
+                    <div class="download-row">
+                        ${group.pc
+              ? `
+                            <a href="${getDownloadUrl(
+                group.pc.key
+              )}" class="download-btn btn-pc desktop-only" target="_blank">
+                                <svg viewBox="0 0 24 24"><path d="M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7v2H8v2h8v-2h-2v-2h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H3V4h18v12z"/></svg>
+                                [PC] Tải xuống
+                            </a>
+                        `
+              : `
+                            <button class="download-btn btn-disabled desktop-only" disabled>
+                                <svg viewBox="0 0 24 24"><path d="M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2zm0 14H3V4h18v12z"/></svg>
+                                [PC] Không có
+                            </button>
+                        `
+            }
+                        ${group.mobile
+              ? `
+                            <a href="${getDownloadUrl(
+                group.mobile.key
+              )}" class="download-btn btn-mobile desktop-only" target="_blank">
+                                <svg viewBox="0 0 24 24"><path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
+                                [Mobile] Tải xuống
+                            </a>
+                        `
+              : `
+                            <button class="download-btn btn-disabled desktop-only" disabled>
+                                <svg viewBox="0 0 24 24"><path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
+                                [Mobile] Không có
+                            </button>
+                        `
+            }
+                        <!-- Mobile Unified Button -->
+                        <a href="${getDownloadUrl(
+              group.mobile
+                ? group.mobile.key
+                : group.pc
+                  ? group.pc.key
+                  : "#"
+            )}" 
+                           class="download-btn btn-mobile mobile-only ${!group.mobile && !group.pc ? "btn-disabled" : ""
+            }" 
+                           ${!group.mobile && !group.pc ? "disabled" : ""}
+                           target="_blank">
+                            <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                            Tải xuống
+                        </a>
+                    </div>
+                </div>
+            `;
+        })
+        .join("");
+
+      grid.insertAdjacentHTML("beforeend", html);
+      renderedCount += nextItems.length;
+
+      // Update sentinel visibility
+      const sentinel = document.getElementById("scroll-sentinel");
+      if (sentinel) {
+        if (renderedCount >= currentItems.length) {
+          sentinel.style.display = "none";
+          if (observer) observer.unobserve(sentinel);
+        } else {
+          sentinel.style.display = "block";
+          if (observer) observer.observe(sentinel);
+        }
+      }
+    }
+
+    // Render library - Initial Setup
+    function renderLibrary(groups) {
+      currentItems = groups;
+      renderedCount = 0;
+
+      const content = document.getElementById("content");
+      const stats = document.getElementById("stats");
+      const totalCount = document.getElementById("total-count");
+      const totalSize = document.getElementById("total-size");
+
+      if (groups.length === 0) {
+        content.innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                        <h3>Không tìm thấy tài liệu</h3>
+                        <p>Thử tìm kiếm với từ khóa khác</p>
+                    </div>
+                `;
+        // Don't hide stats if we have data loaded but just filtered to 0
+        if (allGroups.length > 0) {
+          totalCount.textContent = 0;
+          totalSize.textContent = "0 B";
+        }
+        return;
+      }
+
+      // Calculate stats
+      let totalBytes = 0;
+      groups.forEach((group) => {
+        if (group.pc) totalBytes += group.pc.size;
+        if (group.mobile) totalBytes += group.mobile.size;
+      });
+
+      stats.style.display = "flex";
+      totalCount.textContent = groups.length;
+      totalSize.textContent = formatSize(totalBytes);
+
+      // Initialize Grid and Sentinel
+      content.innerHTML = `
+                <div class="library-grid"></div>
+                <div id="scroll-sentinel" style="height: 20px; margin: 20px 0;"></div>
+            `;
+
+      // Initialize Observer
+      if (observer) observer.disconnect();
+
+      const options = {
+        root: null,
+        rootMargin: "100px",
+        threshold: 0.1,
+      };
+
+      observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            renderNextBatch();
+          }
+        });
+      }, options);
+
+      // Render first batch
+      renderNextBatch();
+    }
+
+    // Normalize text for search (remove accents, lowercase)
+    function normalizeText(text) {
+      return text
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/g, "d")
+        .replace(/Đ/g, "D")
+        .toLowerCase()
+        .trim();
+    }
+
+    // Filter library
+    function filterLibrary(query) {
+      if (!query) {
+        renderLibrary(allGroups);
+        return;
+      }
+
+      const normalizedQuery = normalizeText(query);
+      const filtered = allGroups.filter((group) =>
+        normalizeText(group.title).includes(normalizedQuery)
+      );
+      renderLibrary(filtered);
+    }
+
+    // Fetch and display data
+
+    // Initialize
+    document.addEventListener("DOMContentLoaded", loadLibrary);
+  </script>
+</body>
+
+</html>
