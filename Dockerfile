@@ -32,7 +32,7 @@ RUN cd /tmp/mupdf-1.24.9-source \
 
 
 # Build stage
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 # No CGO build dependencies needed - go-fitz v1.24+ uses purego/ffi
 
