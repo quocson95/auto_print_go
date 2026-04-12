@@ -12,6 +12,8 @@ auto_print
 
 # Dependency
 vendor/
+.gocache/
+.gomodcache/
 
 # Environment
 .env

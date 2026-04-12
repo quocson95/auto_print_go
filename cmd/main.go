@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	aipkg "github.com/sondq/auto_print/internal/ai"
 	"github.com/sondq/auto_print/internal/config"
 	emailpkg "github.com/sondq/auto_print/internal/email"
 	"github.com/sondq/auto_print/internal/pdf"
@@ -42,6 +43,7 @@ func main() {
 	emailMonitor := emailpkg.NewMonitor(cfg)
 	pdfGenerator := pdf.NewGenerator(cfg)
 	telegramSender := telegram.NewSender(cfg)
+	summarizer := aipkg.NewSummarizer(cfg)
 
 	s3Uploader, err := s3pkg.NewUploader(cfg)
 	if err != nil {
@@ -54,6 +56,11 @@ func main() {
 	slog.Info("Monitoring emails", "senders", strings.Join(cfg.SenderEmails, ", "))
 	slog.Info("Check interval", "seconds", cfg.CheckIntervalSeconds)
 	slog.Info("PDF Mode: Dual-format (Desktop + Mobile)")
+	if summarizer.Enabled() {
+		slog.Info("Gemini summarization enabled", "model", cfg.GeminiModel)
+	} else {
+		slog.Info("Gemini summarization disabled")
+	}
 	slog.Info("Starting main loop...")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -81,7 +88,7 @@ func main() {
 		slog.Debug("Check cycle", "cycle", cycleCount)
 
 		start := time.Now()
-		processEmails(ctx, emailMonitor, pdfGenerator, telegramSender, s3Uploader, thumbGenerator, cfg)
+		processEmails(ctx, emailMonitor, pdfGenerator, telegramSender, summarizer, s3Uploader, thumbGenerator, cfg)
 		elapsed := time.Since(start)
 
 		remaining := time.Duration(cfg.CheckIntervalSeconds)*time.Second - elapsed
@@ -107,6 +114,7 @@ func processEmails(
 	emailMonitor *emailpkg.Monitor,
 	pdfGenerator *pdf.Generator,
 	telegramSender *telegram.Sender,
+	summarizer *aipkg.Summarizer,
 	s3Uploader *s3pkg.Uploader,
 	thumbGenerator *thumbnail.Generator,
 	cfg *config.Config,
@@ -135,12 +143,25 @@ func processEmails(
 		slog.Info("Processing email", "uid", e.UID, "subject", e.Subject)
 
 		slog.Info("Generating both PDFs (desktop + mobile)...")
-		desktopPath, mobilePath, err := pdfGenerator.GenerateBothPDFs(ctx, e.Link, e.Subject)
+		artifacts, err := pdfGenerator.GenerateArtifacts(ctx, e.Link, e.Subject)
 		if err != nil {
 			errMsg := fmt.Sprintf("Error processing email %d: %v", e.UID, err)
 			slog.Error(errMsg)
 			telegramSender.SendErrorNotification(ctx, errMsg)
 			continue
+		}
+		desktopPath := artifacts.DesktopPath
+		mobilePath := artifacts.MobilePath
+
+		var summary []string
+		if summarizer.Enabled() && strings.TrimSpace(artifacts.PageText) != "" {
+			slog.Info("Generating Gemini summary...", "uid", e.UID)
+			summary, err = summarizer.Summarize(ctx, artifacts.PageText)
+			if err != nil {
+				slog.Warn("Failed to generate Gemini summary", "uid", e.UID, "error", err)
+			} else if len(summary) > 0 {
+				slog.Info("Gemini summary generated", "uid", e.UID, "bullets", len(summary))
+			}
 		}
 
 		if ctxDone(ctx) {
@@ -182,11 +203,11 @@ func processEmails(
 			return
 		}
 
-		updateIndexJSON(ctx, s3Uploader, desktopPath, mobilePath, pcURL, mobileURL)
+		updateIndexJSON(ctx, s3Uploader, desktopPath, mobilePath, pcURL, mobileURL, e.Subject)
 
 		if pcURL != "" && mobileURL != "" {
 			slog.Info("Sending combined message to Telegram...")
-			ok, err := telegramSender.SendCombinedMessage(ctx, e.Subject, pcURL, mobileURL, thumbnailURL)
+			ok, err := telegramSender.SendCombinedMessage(ctx, e.Subject, pcURL, mobileURL, thumbnailURL, summary)
 			if ok && err == nil {
 				slog.Info("Successfully processed email - both versions sent", "uid", e.UID)
 				emailMonitor.MarkAsRead(e.UID)
@@ -230,15 +251,18 @@ func ctxDone(ctx context.Context) bool {
 	}
 }
 
-func updateIndexJSON(ctx context.Context, uploader *s3pkg.Uploader, desktopPath, mobilePath, pcURL, mobileURL string) {
+func updateIndexJSON(ctx context.Context, uploader *s3pkg.Uploader, desktopPath, mobilePath, pcURL, mobileURL, title string) {
 	var entries []s3pkg.IndexEntry
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000000Z")
+	title = normalizeIndexTitle(title)
 
 	if pcURL != "" {
 		info, err := os.Stat(desktopPath)
 		if err == nil {
 			entries = append(entries, s3pkg.IndexEntry{
 				Key:          "pdfs/" + filepath.Base(desktopPath),
+				Name:         title,
+				Title:        title,
 				LastModified: timestamp,
 				Size:         info.Size(),
 			})
@@ -250,6 +274,8 @@ func updateIndexJSON(ctx context.Context, uploader *s3pkg.Uploader, desktopPath,
 		if err == nil {
 			entries = append(entries, s3pkg.IndexEntry{
 				Key:          "pdfs/" + filepath.Base(mobilePath),
+				Name:         title,
+				Title:        title,
 				LastModified: timestamp,
 				Size:         info.Size(),
 			})
@@ -261,6 +287,10 @@ func updateIndexJSON(ctx context.Context, uploader *s3pkg.Uploader, desktopPath,
 			slog.Error("Failed to update index.json", "error", err)
 		}
 	}
+}
+
+func normalizeIndexTitle(title string) string {
+	return strings.TrimSpace(strings.Join(strings.Fields(title), " "))
 }
 
 func markPendingAsUnread(monitor *emailpkg.Monitor, uids []uint32) {

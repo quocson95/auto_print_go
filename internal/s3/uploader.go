@@ -158,6 +158,8 @@ func (u *Uploader) UploadThumbnail(ctx context.Context, filePath, s3Key string) 
 
 type IndexEntry struct {
 	Key          string `json:"key"`
+	Name         string `json:"name,omitempty"`
+	Title        string `json:"title,omitempty"`
 	LastModified string `json:"lastModified"`
 	Size         int64  `json:"size"`
 }

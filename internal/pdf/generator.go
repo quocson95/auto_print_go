@@ -30,6 +30,12 @@ type Generator struct {
 	retentionDays int
 }
 
+type Artifacts struct {
+	DesktopPath string
+	MobilePath  string
+	PageText    string
+}
+
 func NewGenerator(cfg *config.Config) *Generator {
 	return &Generator{
 		outputDir:     cfg.PDFOutputDir,
@@ -40,12 +46,14 @@ func NewGenerator(cfg *config.Config) *Generator {
 func (g *Generator) generateFilename(subject string) string {
 	subject = strings.TrimPrefix(subject, "Fwd ")
 	subject = strings.TrimPrefix(subject, "Fwd: ")
+	subject = strings.Join(strings.Fields(subject), " ")
 
-	re := regexp.MustCompile(`[^a-zA-Z0-9 \-_]`)
+	re := regexp.MustCompile(`[^\p{L}\p{N} \-_]`)
 	clean := re.ReplaceAllString(subject, "")
 	clean = strings.TrimSpace(clean)
-	if len(clean) > 50 {
-		clean = clean[:50]
+	runes := []rune(clean)
+	if len(runes) > 50 {
+		clean = string(runes[:50])
 	}
 	return clean + ".pdf"
 }
@@ -82,23 +90,32 @@ func (g *Generator) CleanupOldPDFs() {
 }
 
 func (g *Generator) GenerateBothPDFs(ctx context.Context, url, subject string) (desktopPath, mobilePath string, err error) {
-	return retryWithBackoff(ctx, 10, 2*time.Second, func() (string, string, error) {
-		return g.generateBothPDFsOnce(ctx, url, subject)
+	artifacts, err := g.GenerateArtifacts(ctx, url, subject)
+	if err != nil {
+		return "", "", err
+	}
+	return artifacts.DesktopPath, artifacts.MobilePath, nil
+}
+
+func (g *Generator) GenerateArtifacts(ctx context.Context, url, subject string) (Artifacts, error) {
+	return retryWithBackoff(ctx, 10, 2*time.Second, func() (Artifacts, error) {
+		return g.generateArtifactsOnce(ctx, url, subject)
 	})
 }
 
-func retryWithBackoff(ctx context.Context, maxRetries int, initialDelay time.Duration, fn func() (string, string, error)) (string, string, error) {
+func retryWithBackoff[T any](ctx context.Context, maxRetries int, initialDelay time.Duration, fn func() (T, error)) (T, error) {
+	var zero T
 	delay := initialDelay
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if IsShutdownRequested() {
-			return "", "", fmt.Errorf("shutdown requested")
+			return zero, fmt.Errorf("shutdown requested")
 		}
 
-		d, m, err := fn()
+		result, err := fn()
 		if err == nil {
-			return d, m, nil
+			return result, nil
 		}
 
 		lastErr = err
@@ -111,17 +128,17 @@ func retryWithBackoff(ctx context.Context, maxRetries int, initialDelay time.Dur
 			)
 			select {
 			case <-ctx.Done():
-				return "", "", ctx.Err()
+				return zero, ctx.Err()
 			case <-time.After(delay):
 			}
 			delay = min(delay*2, 60*time.Second)
 		}
 	}
 
-	return "", "", fmt.Errorf("all retries failed: %w", lastErr)
+	return zero, fmt.Errorf("all retries failed: %w", lastErr)
 }
 
-func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject string) (string, string, error) {
+func (g *Generator) generateArtifactsOnce(ctx context.Context, url, subject string) (Artifacts, error) {
 	baseName := strings.TrimSuffix(g.generateFilename(subject), ".pdf")
 	desktopFile := fmt.Sprintf("[PC] %s.pdf", baseName)
 	mobileFile := fmt.Sprintf("[Mobile] %s.pdf", baseName)
@@ -141,7 +158,7 @@ func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject strin
 
 	u, err := l.Launch()
 	if err != nil {
-		return "", "", fmt.Errorf("launch chromium: %w", err)
+		return Artifacts{}, fmt.Errorf("launch chromium: %w", err)
 	}
 
 	slog.Info("Chromium launched, connecting to DevTools protocol...")
@@ -154,15 +171,15 @@ func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject strin
 	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
 		Width: 1920, Height: 1080,
 	}); err != nil {
-		return "", "", fmt.Errorf("set viewport: %w", err)
+		return Artifacts{}, fmt.Errorf("set viewport: %w", err)
 	}
 
 	slog.Info("Loading page", "url", url)
 	if err := page.Navigate(url); err != nil {
-		return "", "", fmt.Errorf("navigate: %w", err)
+		return Artifacts{}, fmt.Errorf("navigate: %w", err)
 	}
 	if err := page.WaitLoad(); err != nil {
-		return "", "", fmt.Errorf("wait load: %w", err)
+		return Artifacts{}, fmt.Errorf("wait load: %w", err)
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -178,6 +195,11 @@ func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject strin
 	slog.Info("Waiting for images to load...")
 	time.Sleep(3 * time.Second)
 
+	pageText, err := g.extractPageText(page)
+	if err != nil {
+		slog.Warn("Failed to extract visible page text", "error", err)
+	}
+
 	slog.Info("Compressing images to reduce PDF size...")
 	g.compressImages(page)
 	time.Sleep(time.Second)
@@ -185,7 +207,7 @@ func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject strin
 	// Desktop PDF (A4 landscape)
 	slog.Info("Saving desktop PDF", "path", desktopPath)
 	if err := g.savePDF(page, desktopPath, 29.7, 21.0, 1.0); err != nil {
-		return "", "", fmt.Errorf("desktop PDF: %w", err)
+		return Artifacts{}, fmt.Errorf("desktop PDF: %w", err)
 	}
 	slog.Info("Desktop PDF generated", "path", desktopPath)
 
@@ -194,7 +216,7 @@ func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject strin
 	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
 		Width: 375, Height: 812,
 	}); err != nil {
-		return "", "", fmt.Errorf("set mobile viewport: %w", err)
+		return Artifacts{}, fmt.Errorf("set mobile viewport: %w", err)
 	}
 	time.Sleep(time.Second)
 
@@ -205,13 +227,17 @@ func (g *Generator) generateBothPDFsOnce(ctx context.Context, url, subject strin
 	// Mobile PDF (A5 portrait)
 	slog.Info("Saving mobile PDF", "path", mobilePath)
 	if err := g.savePDF(page, mobilePath, 14.8, 21.0, 0.5); err != nil {
-		return "", "", fmt.Errorf("mobile PDF: %w", err)
+		return Artifacts{}, fmt.Errorf("mobile PDF: %w", err)
 	}
 	slog.Info("Mobile PDF generated", "path", mobilePath)
 
 	g.CleanupOldPDFs()
 
-	return desktopPath, mobilePath, nil
+	return Artifacts{
+		DesktopPath: desktopPath,
+		MobilePath:  mobilePath,
+		PageText:    pageText,
+	}, nil
 }
 
 func (g *Generator) savePDF(page *rod.Page, path string, widthCM, heightCM, marginCM float64) error {
@@ -352,4 +378,61 @@ func (g *Generator) injectMobileCSS(page *rod.Page) {
 		` + "`" + `;
 		document.head.appendChild(style);
 	}`)
+}
+
+func (g *Generator) extractPageText(page *rod.Page) (string, error) {
+	result, err := page.Eval(`() => {
+		const root = document.body || document.documentElement;
+		if (!root) return '';
+
+		const ignoredTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG']);
+		const lines = [];
+		const seen = new Set();
+		const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+			acceptNode(node) {
+				const parent = node.parentElement;
+				if (!parent || ignoredTags.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+
+				const text = node.textContent.replace(/\s+/g, ' ').trim();
+				if (!text) return NodeFilter.FILTER_REJECT;
+
+				const style = window.getComputedStyle(parent);
+				if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+
+				const rect = parent.getBoundingClientRect();
+				if (rect.width === 0 || rect.height === 0) return NodeFilter.FILTER_REJECT;
+
+				return NodeFilter.FILTER_ACCEPT;
+			}
+		});
+
+		while (walker.nextNode()) {
+			const text = walker.currentNode.textContent.replace(/\s+/g, ' ').trim();
+			if (!text || seen.has(text)) continue;
+			seen.add(text);
+			lines.push(text);
+		}
+
+		return lines.join('\n');
+	}`)
+	if err != nil {
+		return "", fmt.Errorf("evaluate page text: %w", err)
+	}
+
+	return normalizePageText(result.Value.Str()), nil
+}
+
+func normalizePageText(input string) string {
+	lines := strings.Split(strings.ReplaceAll(input, "\r\n", "\n"), "\n")
+	cleaned := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+
+	return strings.TrimSpace(strings.Join(cleaned, "\n"))
 }
